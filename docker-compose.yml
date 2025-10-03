@@ -34,7 +34,7 @@ services:
       OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
-      CORS_ORIGIN: http://localhost:3000
+      CORS_ORIGIN: https://aitf-assignment-u4c7.vercel.app
     depends_on:
       - mongodb
     volumes:
@@ -48,7 +48,7 @@ services:
       context: ./client
       dockerfile: Dockerfile
       args:
-        REACT_APP_API_URL: http://localhost:5000/api
+        REACT_APP_API_URL: https://aitf-assignment-4.onrender.com/api
     container_name: ai-weather-chatbot-frontend
     restart: unless-stopped
     ports:
