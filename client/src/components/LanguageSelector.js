@@ -4,11 +4,7 @@ import { Languages } from 'lucide-react';
 
 const LanguageSelector = ({ selectedLanguage, onLanguageChange }) => {
   const languages = [
-    {
-      code: 'zh',
-      name: '中文',
-      flag: '🇨🇳'
-    },
+    
     {
       code: 'ja',
       name: '日本語',
