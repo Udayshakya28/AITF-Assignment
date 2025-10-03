@@ -1,4 +1,4 @@
-// services/AIService.js
+// services/aiService.js
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const logger = require("../utils/logger");
 const mockService = require("./mockService");
@@ -7,15 +7,52 @@ class AIService {
   constructor() {
     this.apiKey = process.env.GEMINI_API_KEY;
     this.isApiAvailable = !!this.apiKey && this.apiKey !== "demo_key_replace_with_real";
+    this.modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest";
+    this.tried = false; // to avoid repeated probing
 
     if (this.isApiAvailable) {
       this.genAI = new GoogleGenerativeAI(this.apiKey);
-      // Use fast by default; allow override via env: GEMINI_MODEL=gemini-1.5-pro
-      this.model = this.genAI.getGenerativeModel({
-        model: process.env.GEMINI_MODEL || "gemini-1.5-flash",
-      });
+      this.model = this.genAI.getGenerativeModel({ model: this.modelName });
     } else {
       logger.warn("Gemini API key not configured - using mock AI responses");
+    }
+  }
+
+  // --- model probe ---
+  async ensureWorkingModel() {
+    if (!this.isApiAvailable || this.tried) return;
+    const candidates = [
+      this.modelName,
+      "gemini-1.5-flash-latest",
+      "gemini-1.5-pro-latest",
+      "gemini-1.5-flash-8b",
+      "gemini-pro" // legacy
+    ];
+    for (const name of candidates) {
+      try {
+        const m = this.genAI.getGenerativeModel({ model: name });
+        const test = await m.generateContent({
+          contents: [{ role: "user", parts: [{ text: "ping" }] }],
+          generationConfig: { maxOutputTokens: 4, temperature: 0 }
+        });
+        if (test?.response?.text) {
+          this.model = m;
+          this.modelName = name;
+          logger.info(`✅ Gemini model selected: ${name}`);
+          break;
+        }
+      } catch (e) {
+        const msg = String(e?.message || e);
+        if (msg.includes("404")) {
+          logger.warn(`Gemini model not available on this API: ${name}`);
+        } else {
+          logger.warn(`Gemini model probe failed for ${name}: ${msg}`);
+        }
+      }
+    }
+    this.tried = true;
+    if (!this.model) {
+      throw new Error("No compatible Gemini model found. Update @google/generative-ai or GEMINI_MODEL.");
     }
   }
 
@@ -28,16 +65,20 @@ class AIService {
   }
 
   async generateContent(prompt, generationConfig = {}) {
+    await this.ensureWorkingModel();
     const cfg = {
       temperature: 0.7,
-      maxOutputTokens: 1024, // model token cap; we still hard-trim to 100 words
+      maxOutputTokens: 1024,
       ...generationConfig,
     };
-    const result = await this.model.generateContent({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: cfg });
+    const result = await this.model.generateContent({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: cfg
+    });
     return result.response.text();
   }
 
-  // --- existing public APIs ---
+  // --- public APIs ---
   async generateTravelSuggestions(weatherData, userPreferences = {}) {
     try {
       const { theme = "travel", location = {} } = userPreferences;
@@ -49,7 +90,6 @@ class AIService {
 
       const system = this.getSystemPrompt(theme);
       const user = this.buildPrompt(weatherData, theme, location);
-
       const prompt = `${system}\n\n---\n${user}\n\n制約: 返答は必ず100語以内（英語換算の単語数上限）で、自然な日本語で。`;
 
       const raw = await this.generateContent(prompt, { temperature: 0.7 });
@@ -100,14 +140,12 @@ class AIService {
 `.trim();
 
       const raw = await this.generateContent(prompt, { temperature: 0.3 });
-      // Try parse; if fails, fallback
       try {
-        const clipped = this.truncateToWords(raw, 120); // leave some headroom before JSON parse
+        const clipped = this.truncateToWords(raw, 120);
         const jsonStart = clipped.indexOf("{");
         const jsonEnd = clipped.lastIndexOf("}");
         const jsonText = jsonStart >= 0 && jsonEnd > jsonStart ? clipped.slice(jsonStart, jsonEnd + 1) : clipped;
         const result = JSON.parse(jsonText);
-        // Hard-clip response field
         if (typeof result.response === "string") {
           result.response = this.truncateToWords(result.response, 100);
         }
@@ -177,7 +215,7 @@ ${ctx}${prefs}
     }
   }
 
-  // --- prompts & helpers (mostly unchanged) ---
+  // --- prompts & helpers ---
   getSystemPrompt(theme) {
     const prompts = {
       travel: `あなたは日本語を話す旅行アドバイザーです。天気情報に基づき、その日に最適な旅行・外出案を提案。服装・持ち物・具体的な場所を含め、100語以内で。`,
