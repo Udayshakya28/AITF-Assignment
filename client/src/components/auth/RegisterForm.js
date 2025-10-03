@@ -45,17 +45,7 @@ const RegisterForm = ({ onSwitchToLogin }) => {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    
-    if (name.includes('.')) {
-      const [parent, child] = name.split('.');
-      setFormData(prev => ({
-        ...prev,
-        [parent]: {
-          ...prev[parent],
-          [child]: value
-        }
-      }));
-    } else if (name.includes('location.')) {
+    if (name.includes('location.')) {
       const field = name.split('.')[1];
       setFormData(prev => ({
         ...prev,
@@ -65,6 +55,16 @@ const RegisterForm = ({ onSwitchToLogin }) => {
             ...prev.preferences.location,
             [field]: value
           }
+        }
+      }));
+    }
+    else if (name.includes('.')) {
+      const [parent, child] = name.split('.');
+      setFormData(prev => ({
+        ...prev,
+        [parent]: {
+          ...prev[parent],
+          [child]: value
         }
       }));
     } else {
