@@ -7,8 +7,8 @@ class AIService {
   constructor() {
     this.apiKey = process.env.GEMINI_API_KEY;
     this.isApiAvailable = !!this.apiKey && this.apiKey !== "demo_key_replace_with_real";
-    this.modelName = process.env.GEMINI_MODEL || "gemini-1.5-flash-latest";
-    this.tried = false; // to avoid repeated probing
+    this.modelName = process.env.GEMINI_MODEL || "gemini-pro"; // ✅ safe default
+    this.tried = false;
 
     if (this.isApiAvailable) {
       this.genAI = new GoogleGenerativeAI(this.apiKey);
@@ -21,13 +21,13 @@ class AIService {
   // --- model probe ---
   async ensureWorkingModel() {
     if (!this.isApiAvailable || this.tried) return;
+
     const candidates = [
       this.modelName,
-      "gemini-1.5-flash-latest",
-      "gemini-1.5-pro-latest",
-      "gemini-1.5-flash-8b",
-      "gemini-pro" // legacy
+      "gemini-pro",        // text-only
+      "gemini-pro-vision", // text+image
     ];
+
     for (const name of candidates) {
       try {
         const m = this.genAI.getGenerativeModel({ model: name });
@@ -42,14 +42,10 @@ class AIService {
           break;
         }
       } catch (e) {
-        const msg = String(e?.message || e);
-        if (msg.includes("404")) {
-          logger.warn(`Gemini model not available on this API: ${name}`);
-        } else {
-          logger.warn(`Gemini model probe failed for ${name}: ${msg}`);
-        }
+        logger.warn(`Gemini model probe failed for ${name}: ${String(e?.message || e)}`);
       }
     }
+
     this.tried = true;
     if (!this.model) {
       throw new Error("No compatible Gemini model found. Update @google/generative-ai or GEMINI_MODEL.");
