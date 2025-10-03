@@ -9,11 +9,15 @@
     "client": "cd client && npm start",
     "build": "cd client && npm run build",
     "install-all": "npm install && cd server && npm install && cd ../client && npm install",
+    "render-build": "npm ci --prefix server && npm ci --prefix client && npm run build --prefix client",
     "docker:build": "docker-compose build",
     "docker:up": "docker-compose up -d",
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f",
     "setup": "npm run install-all && echo 'Please configure your .env file with API keys'"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "keywords": ["chatbot", "weather", "ai", "voice", "japanese", "travel"],
   "author": "Your Name",
