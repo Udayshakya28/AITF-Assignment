@@ -9,6 +9,7 @@ const logger = require('./utils/logger');
 const errorHandler = require('./middleware/errorHandler');
 
 // Import routes
+const authRoutes = require('./routes/auth');
 const weatherRoutes = require('./routes/weather');
 const chatRoutes = require('./routes/chat');
 const aiRoutes = require('./routes/ai');
@@ -56,6 +57,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // API routes
+app.use('/api/auth', authRoutes);
 app.use('/api/weather', weatherRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/ai', aiRoutes);

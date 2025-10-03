@@ -222,14 +222,9 @@ router.put('/preferences/:sessionId', async (req, res) => {
     const { sessionId } = req.params;
     const { preferences } = req.body;
 
-    const chat = await Chat.findOneAndUpdate(
-      { sessionId },
-      { 
-        preferences: { ...preferences },
-        updatedAt: new Date()
-      },
-      { new: true }
-    );
+    const chat = await sessionService.updateSession(sessionId, {
+      preferences: { ...preferences }
+    });
 
     if (!chat) {
       return res.status(404).json({
