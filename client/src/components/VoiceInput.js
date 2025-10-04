@@ -1,176 +1,263 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Mic, MicOff, Volume2 } from 'lucide-react';
+// src/components/VoiceInput.js
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Mic, MicOff, Volume2 } from "lucide-react";
 
-const VoiceInput = ({ onVoiceInput, isEnabled = true, language = 'ja' }) => {
+const LANGUAGE_MAP = { ja: "ja-JP", en: "en-US", zh: "zh-CN", "zh-CN": "zh-CN", "zh-TW": "zh-TW" };
+
+const VoiceInput = ({
+  onVoiceInput,                // (text, true) -> set search bar + run search
+  isEnabled = true,
+  language = "auto",           // "auto" | "ja" | "en"
+  silenceTimeoutMs = 2000,     // commit after 2s of silence
+  maxDurationMs = 60000,       // hard stop after 60s just in case
+}) => {
   const [isListening, setIsListening] = useState(false);
   const [isSupported, setIsSupported] = useState(false);
-  const [transcript, setTranscript] = useState('');
+  const [bubble, setBubble] = useState(""); // visual only
   const [error, setError] = useState(null);
+
   const recognitionRef = useRef(null);
-  const timeoutRef = useRef(null);
+  const startingRef = useRef(false);
+  const silenceTimerRef = useRef(null);
+  const hardStopTimerRef = useRef(null);
+  const langTriedRef = useRef([]);
+  const userWantsListeningRef = useRef(false);
 
+  // Build recognition
   useEffect(() => {
-    // Check if Web Speech API is supported
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    
-    if (SpeechRecognition) {
-      setIsSupported(true);
-      
-      // Initialize speech recognition
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      // Support multiple languages including Chinese
-      const languageMap = {
-        'ja': 'ja-JP',
-        'zh': 'zh-CN',
-        'zh-CN': 'zh-CN',
-        'zh-TW': 'zh-TW',
-        'en': 'en-US'
-      };
-      recognition.lang = languageMap[language] || 'ja-JP';
-      recognition.maxAlternatives = 1;
-
-      recognition.onstart = () => {
-        setIsListening(true);
-        setError(null);
-        setTranscript('');
-      };
-
-      recognition.onresult = (event) => {
-        let finalTranscript = '';
-        let interimTranscript = '';
-
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalTranscript += transcript;
-          } else {
-            interimTranscript += transcript;
-          }
-        }
-
-        setTranscript(finalTranscript || interimTranscript);
-
-        if (finalTranscript) {
-          // Clear timeout if we got a final result
-          if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-          }
-          
-          // Send the final transcript
-          onVoiceInput(finalTranscript.trim(), true);
-          setTranscript('');
-          setIsListening(false);
-        }
-      };
-
-      recognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        setIsListening(false);
-        
-        let errorMessage = '音声認識でエラーが発生しました';
-        switch (event.error) {
-          case 'no-speech':
-            errorMessage = '音声が検出されませんでした';
-            break;
-          case 'audio-capture':
-            errorMessage = 'マイクにアクセスできません';
-            break;
-          case 'not-allowed':
-            errorMessage = 'マイクの使用が許可されていません';
-            break;
-          case 'network':
-            errorMessage = 'ネットワークエラーが発生しました';
-            break;
-          case 'language-not-supported':
-            errorMessage = '選択された言語はサポートされていません';
-            break;
-        }
-        
-        setError(errorMessage);
-        
-        // Clear error after 3 seconds
-        setTimeout(() => setError(null), 3000);
-      };
-
-      recognition.onend = () => {
-        setIsListening(false);
-        
-        // If we have a transcript but recognition ended without final result
-        if (transcript && !transcript.trim()) {
-          setTranscript('');
-        }
-      };
-
-      recognitionRef.current = recognition;
-    } else {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
       setIsSupported(false);
-      setError('お使いのブラウザは音声認識をサポートしていません');
+      setError("お使いのブラウザは音声認識をサポートしていません");
+      return;
     }
+    setIsSupported(true);
 
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
+    const rec = new SR();
+    rec.continuous = true;         
+    rec.interimResults = true; 
+    rec.maxAlternatives = 1;
+    rec.lang = language === "auto" ? LANGUAGE_MAP.ja : (LANGUAGE_MAP[language] || LANGUAGE_MAP.ja);
+
+    rec.onstart = () => {
+      setError(null);
+      setIsListening(true);
+      setBubble("");
+      startingRef.current = false;
+
+      if (hardStopTimerRef.current) clearTimeout(hardStopTimerRef.current);
+      hardStopTimerRef.current = setTimeout(() => {
+        // Hard stop if something goes wrong
+        commitAndStop();
+      }, maxDurationMs);
+      kickSilenceTimer(); // start silence window
+    };
+
+    rec.onresult = (e) => {
+      let finalChunk = "";
+      let interimChunk = "";
+
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const text = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalChunk += text;
+        else interimChunk += text;
       }
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
+
+      // Update bubble for UX (but DO NOT emit).
+      const preview = (finalChunk || interimChunk || "").trim();
+      if (preview) setBubble(preview);
+
+      // Reset silence timer on any speech activity
+      kickSilenceTimer();
+    };
+
+    rec.onerror = (e) => {
+      // Auto-fallback to the other language in "auto" mode for early end errors
+      if (
+        language === "auto" &&
+        (e.error === "no-speech" || e.error === "aborted" || e.error === "network")
+      ) {
+        attemptAutoFallback();
+        return;
+      }
+
+      let msg = "音声認識でエラーが発生しました";
+      if (e.error === "no-speech") msg = "音声が検出されませんでした";
+      else if (e.error === "audio-capture") msg = "マイクにアクセスできません";
+      else if (e.error === "not-allowed") msg = "マイクの使用が許可されていません";
+      else if (e.error === "network") msg = "ネットワークエラーが発生しました";
+      else if (e.error === "aborted") msg = "認識が中断されました";
+
+      setError(msg);
+      setTimeout(() => setError(null), 2500);
+      cleanupTimers();
+      setIsListening(false);
+      startingRef.current = false;
+      userWantsListeningRef.current = false;
+    };
+
+    rec.onend = () => {
+      setIsListening(false);
+      startingRef.current = false;
+      if (userWantsListeningRef.current) {
+        tryRestart();
+      } else {
+        cleanupTimers();
       }
     };
-  }, [language, onVoiceInput, transcript]);
 
-  const startListening = () => {
-    if (!isSupported || !isEnabled || isListening) return;
+    recognitionRef.current = rec;
+
+    return () => {
+      try {
+        rec.onresult = rec.onstart = rec.onend = rec.onerror = null;
+        rec.abort();
+        rec.stop();
+      } catch {}
+      cleanupTimers();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [language, maxDurationMs, silenceTimeoutMs]);
+
+  const cleanupTimers = () => {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (hardStopTimerRef.current) clearTimeout(hardStopTimerRef.current);
+  };
+
+  const kickSilenceTimer = () => {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    silenceTimerRef.current = setTimeout(() => {
+      // 2s of silence -> commit and stop
+      commitAndStop();
+    }, silenceTimeoutMs);
+  };
+
+  const ensureHttpsOrLocalhost = () => {
+    const { protocol, hostname } = window.location;
+    if (protocol === "https:" || hostname === "localhost") return true;
+    setError("Voice input needs HTTPS or localhost.");
+    setTimeout(() => setError(null), 3000);
+    return false;
+  };
+
+  const warmupMic = useCallback(async () => {
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+      return true;
+    } catch {
+      setError("マイクの権限が必要です");
+      setTimeout(() => setError(null), 3000);
+      return false;
+    }
+  }, []);
+
+  const setRecLang = (bcp47) => {
+    if (recognitionRef.current) recognitionRef.current.lang = bcp47;
+  };
+
+  const safeStart = useCallback(async () => {
+    if (!isSupported || !isEnabled || isListening || startingRef.current) return;
+    if (!ensureHttpsOrLocalhost()) return;
+
+    startingRef.current = true;
+    userWantsListeningRef.current = true;
+
+    const ok = await warmupMic();
+    if (!ok) {
+      startingRef.current = false;
+      userWantsListeningRef.current = false;
+      return;
+    }
+
+    // Language selection for this attempt
+    if (language === "auto") {
+      const tried = langTriedRef.current;
+      const next = tried.includes("ja-JP") ? "en-US" : "ja-JP";
+      setRecLang(next);
+    } else {
+      setRecLang(LANGUAGE_MAP[language] || "ja-JP");
+    }
 
     try {
-      recognitionRef.current.start();
-      
-      // Set a timeout to stop listening after 10 seconds
-      timeoutRef.current = setTimeout(() => {
-        if (recognitionRef.current && isListening) {
-          recognitionRef.current.stop();
-        }
-      }, 10000);
-    } catch (error) {
-      console.error('Failed to start speech recognition:', error);
-      setError('音声認識の開始に失敗しました');
+      recognitionRef.current?.start();
+    } catch {
+      startingRef.current = false;
+      userWantsListeningRef.current = false;
+      setError("音声認識の開始に失敗しました（既に実行中の可能性）");
+      setTimeout(() => setError(null), 2500);
     }
+  }, [isEnabled, isListening, isSupported, language, warmupMic]);
+
+  const safeStop = useCallback(() => {
+    userWantsListeningRef.current = false;
+    try {
+      recognitionRef.current?.stop();
+      recognitionRef.current?.abort();
+    } catch {}
+    cleanupTimers();
+  }, []);
+
+  const tryRestart = () => {
+    setTimeout(() => {
+      if (!userWantsListeningRef.current) return;
+      try {
+        recognitionRef.current?.start();
+      } catch {}
+    }, 150);
   };
 
-  const stopListening = () => {
-    if (recognitionRef.current && isListening) {
-      recognitionRef.current.stop();
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
+  const attemptAutoFallback = () => {
+    if (language !== "auto") return;
+    const tried = langTriedRef.current;
+    const current = recognitionRef.current?.lang;
+    if (!current) return;
+
+    if (!tried.includes(current)) tried.push(current);
+    if (tried.length === 1) {
+      const other = current === "ja-JP" ? "en-US" : "ja-JP";
+      setRecLang(other);
+      tryRestart();
+      return;
     }
+    // tried both
+    setError("音声が検出されませんでした（自動言語判定）");
+    setTimeout(() => setError(null), 2500);
+    userWantsListeningRef.current = false;
+    cleanupTimers();
   };
 
-  const toggleListening = () => {
-    if (isListening) {
-      stopListening();
-    } else {
-      startListening();
+  // Commit the last seen bubble and stop listening
+  const commitAndStop = () => {
+    const text = (bubble || "").trim();
+    if (text) {
+      // Single, final commit to the parent
+      onVoiceInput?.(text, false);
     }
+    setBubble("");
+    safeStop();
   };
 
-  // Text-to-speech for reading responses (bonus feature)
+  // Stop when tab hidden
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden && isListening) commitAndStop();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [isListening]); // commitAndStop is stable via refs/closures
+
+  const toggleListening = () => (isListening ? commitAndStop() : safeStart());
+
+  // TTS helper (optional)
   const speakText = (text) => {
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      const languageMap = {
-        'ja': 'ja-JP',
-        'zh': 'zh-CN',
-        'zh-CN': 'zh-CN',
-        'zh-TW': 'zh-TW',
-        'en': 'en-US'
-      };
-      utterance.lang = languageMap[language] || 'ja-JP';
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
-      window.speechSynthesis.speak(utterance);
-    }
+    if (!("speechSynthesis" in window)) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    const langCode = language === "auto" ? "ja-JP" : (LANGUAGE_MAP[language] || "ja-JP");
+    utterance.lang = langCode;
+    utterance.rate = 0.95;
+    utterance.pitch = 1;
+    window.speechSynthesis.speak(utterance);
   };
 
   if (!isSupported) {
@@ -191,20 +278,10 @@ const VoiceInput = ({ onVoiceInput, isEnabled = true, language = 'ja' }) => {
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
           className={`relative p-4 rounded-full transition-all duration-300 ${
-            isListening
-              ? 'bg-red-500 hover:bg-red-600 recording-pulse'
-              : 'bg-blue-500 hover:bg-blue-600'
-          } ${
-            !isEnabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-          } text-white shadow-lg`}
+            isListening ? "bg-red-500 hover:bg-red-600 recording-pulse" : "bg-blue-500 hover:bg-blue-600"
+          } ${!isEnabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"} text-white shadow-lg`}
         >
-          {isListening ? (
-            <MicOff className="w-6 h-6" />
-          ) : (
-            <Mic className="w-6 h-6" />
-          )}
-          
-          {/* Recording indicator */}
+          {isListening ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
           {isListening && (
             <motion.div
               initial={{ scale: 0 }}
@@ -216,20 +293,21 @@ const VoiceInput = ({ onVoiceInput, isEnabled = true, language = 'ja' }) => {
 
         {/* Text-to-speech button */}
         <motion.button
-          onClick={() => speakText('こんにちは。何かお手伝いできることはありますか？')}
+          onClick={() =>
+            speakText(language === "en" ? "Hello! How can I help you?" : "こんにちは。何かお手伝いできることはありますか？")
+          }
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
-          className="p-3 bg-purple-500 hover:bg-purple-600 text-white rounded-full
-                   transition-colors duration-200 shadow-lg"
+          className="p-3 bg-purple-500 hover:bg-purple-600 text-white rounded-full transition-colors duration-200 shadow-lg"
           title="音声で挨拶"
         >
           <Volume2 className="w-5 h-5" />
         </motion.button>
       </div>
 
-      {/* Status and Transcript Display */}
+      {/* Status Bubble (visual only; NOT committed until silence) */}
       <AnimatePresence>
-        {(isListening || transcript || error) && (
+        {(isListening || bubble || error) && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -248,32 +326,23 @@ const VoiceInput = ({ onVoiceInput, isEnabled = true, language = 'ja' }) => {
                     transition={{ repeat: Infinity, duration: 1.5 }}
                     className="w-2 h-2 bg-white rounded-full"
                   />
-                  <p className="text-sm font-noto">
-                    {transcript || '聞いています...'}
-                  </p>
+                  <p className="text-sm font-noto">{bubble || "聞いています..."}</p>
                 </div>
               </div>
-            ) : transcript ? (
+            ) : bubble ? (
               <div className="bg-green-500/90 text-white px-4 py-2 rounded-lg backdrop-blur-sm">
-                <p className="text-sm font-noto">{transcript}</p>
+                <p className="text-sm font-noto">{bubble}</p>
               </div>
             ) : null}
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Instructions */}
       {!isListening && !error && (
         <div className="text-center text-white/60 font-noto">
-          <p className="text-sm">
-            🎤 {language === 'zh' || language === 'zh-CN' ? 
-              '点击麦克风按钮开始语音输入' : 
-              'マイクボタンを押して音声入力を開始'}
-          </p>
+          <p className="text-sm">🎤 話し終えて2秒静かになると検索に送信されます</p>
           <p className="text-xs mt-1">
-            {language === 'zh' || language === 'zh-CN' ? 
-              '支持中文语音输入' : 
-              '日本語での音声入力に対応しています'}
+            {language === "en" ? "English supported" : language === "auto" ? "日本語／英語 自動" : "日本語対応"}
           </p>
         </div>
       )}
@@ -282,4 +351,3 @@ const VoiceInput = ({ onVoiceInput, isEnabled = true, language = 'ja' }) => {
 };
 
 export default VoiceInput;
-
