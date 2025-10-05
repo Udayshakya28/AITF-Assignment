@@ -92,7 +92,7 @@ const AuthPage = () => {
           transition={{ delay: 0.7 }}
           className="text-center mt-12 text-white/60 font-noto"
         >
-          <p>© 2024 AI Weather Chatbot. Built for AITF Assignment.</p>
+          <p>© 2025 AI Weather Chatbot. Built for AITF Assignment.</p>
         </motion.div>
       </div>
     </div>
